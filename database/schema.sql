@@ -105,3 +105,18 @@ VALUES (
     NOW(),
 
 );
+
+-- Create the table that tracks user book checkouts
+CREATE TABLE IF NOT EXISTS book_borrows (
+    borrow_id INT AUTO_INCREMENT PRIMARY KEY,
+    book_id INT NOT NULL,
+    user_id INT NOT NULL,
+    borrow_date DATETIME NOT NULL,
+    due_date DATETIME NOT NULL,
+    return_date DATETIME DEFAULT NULL,
+    status VARCHAR(20) DEFAULT 'borrowed',
+    FOREIGN KEY (book_id) REFERENCES books(book_id) ON DELETE RESTRICT,
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+

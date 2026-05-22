@@ -2,88 +2,49 @@
 Libralex Information System
 models/base_model.py
 
-Shared database helper mixin used by all model classes.
-Provides DRY _fetch_one / _fetch_all helpers with safe cursor lifecycle
-management that survives cursor-construction failures.
+Shared DB helper mixin. All DML auto-commits and auto-rolls-back.
+Connection health is checked before every query.
 """
-
 import logging
+from typing import Optional
+from database.db_connection import ensure_alive
 
 logger = logging.getLogger(__name__)
 
-
 class BaseModel:
-    """
-    Abstract base for all Libralex model classes.
+    """Abstract base — subclass must set self.conn before calling any helper."""
 
-    Subclasses must set ``self.conn`` to an active MySQL connection before
-    calling any helper method.
+    def _check_conn(self) -> None:
+        self.conn = ensure_alive(self.conn)
 
-    Attributes:
-        conn: Active ``mysql.connector`` connection handle (set by subclass).
-    """
-
-    def _fetch_one(self, sql: str, params: tuple = ()) -> dict | None:
-        """
-        Execute *sql* and return the first matching row as a dict, or None.
-
-        Args:
-            sql (str): Parameterised SQL query string.
-            params (tuple): Positional bind parameters.
-
-        Returns:
-            dict | None: First result row, or ``None`` if no rows matched.
-        """
+    def _fetch_one(self, sql: str, params: tuple = ()) -> Optional[dict]:
+        self._check_conn()
         cursor = None
         try:
             cursor = self.conn.cursor(dictionary=True)
             cursor.execute(sql, params)
             return cursor.fetchone()
         except Exception:
-            logger.exception("_fetch_one failed. SQL: %s  Params: %s", sql, params)
+            logger.exception("_fetch_one failed. SQL: %s", sql[:120])
             raise
         finally:
-            if cursor is not None:
-                cursor.close()
+            if cursor: cursor.close()
 
-    def _fetch_all(self, sql: str, params: tuple = ()) -> list[dict]:
-        """
-        Execute *sql* and return all matching rows as a list of dicts.
-
-        Args:
-            sql (str): Parameterised SQL query string.
-            params (tuple): Positional bind parameters.
-
-        Returns:
-            list[dict]: All result rows (empty list if none).
-        """
+    def _fetch_all(self, sql: str, params: tuple = ()) -> list:
+        self._check_conn()
         cursor = None
         try:
             cursor = self.conn.cursor(dictionary=True)
             cursor.execute(sql, params)
             return cursor.fetchall()
         except Exception:
-            logger.exception("_fetch_all failed. SQL: %s  Params: %s", sql, params)
+            logger.exception("_fetch_all failed. SQL: %s", sql[:120])
             raise
         finally:
-            if cursor is not None:
-                cursor.close()
+            if cursor: cursor.close()
 
     def _execute(self, sql: str, params: tuple = ()) -> int:
-        """
-        Execute a non-SELECT statement and commit, returning ``rowcount``.
-        Rolls back automatically on any exception.
-
-        Args:
-            sql (str): Parameterised DML statement.
-            params (tuple): Positional bind parameters.
-
-        Returns:
-            int: Number of rows affected.
-
-        Raises:
-            Exception: Re-raises any DB error after rollback.
-        """
+        self._check_conn()
         cursor = None
         try:
             cursor = self.conn.cursor()
@@ -91,9 +52,25 @@ class BaseModel:
             self.conn.commit()
             return cursor.rowcount
         except Exception:
-            self.conn.rollback()
-            logger.exception("_execute failed. SQL: %s  Params: %s", sql, params)
+            try: self.conn.rollback()
+            except Exception: logger.warning("Rollback failed.")
+            logger.exception("_execute failed. SQL: %s", sql[:120])
             raise
         finally:
-            if cursor is not None:
-                cursor.close()
+            if cursor: cursor.close()
+
+    def _execute_returning_id(self, sql: str, params: tuple = ()) -> int:
+        self._check_conn()
+        cursor = None
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(sql, params)
+            self.conn.commit()
+            return cursor.lastrowid
+        except Exception:
+            try: self.conn.rollback()
+            except Exception: logger.warning("Rollback failed.")
+            logger.exception("_execute_returning_id failed. SQL: %s", sql[:120])
+            raise
+        finally:
+            if cursor: cursor.close()
