@@ -4,13 +4,15 @@ views/librarian_view.py
 
 Librarian Dashboard — tabbed interface for librarian and admin roles.
 Tabs:
-  1. Dashboard   — summary counts panel
+  1. Dashboard   — advanced analytics KPI cards and metrics panel
   2. Submissions — pending submission review queue
   3. Reviews     — pending patron review moderation queue
   4. Catalog     — full catalog management (add/edit/delete books)
   5. Users       — patron/contributor account management
 """
 
+import os
+import logging
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTabWidget, QTableWidget, QTableWidgetItem, QFrame,
@@ -20,6 +22,11 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
+
+# Integration of the custom data-engine panel
+from views.analytics_view import AnalyticsDashboard
+
+logger = logging.getLogger(__name__)
 
 
 class LibrarianView(QWidget):
@@ -142,11 +149,19 @@ class LibrarianView(QWidget):
         root.addLayout(self._build_topbar())
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_dashboard_tab(),   "🏠  Dashboard")
+
+        # Instantiate advanced KPI Analytics panel as first primary tab workspace
+        self.analytics_tab = AnalyticsDashboard(self.ctrl)
+
+        self.tabs.addTab(self.analytics_tab,            "🏠  Dashboard")
         self.tabs.addTab(self._build_submissions_tab(), "📥  Submissions")
         self.tabs.addTab(self._build_reviews_tab(),     "⭐  Reviews")
         self.tabs.addTab(self._build_catalog_tab(),     "📚  Catalog")
         self.tabs.addTab(self._build_users_tab(),       "👥  Users")
+
+        # Connect tab changes to auto-refresh metrics dynamically
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+
         root.addWidget(self.tabs, stretch=1)
 
     def _build_topbar(self):
@@ -174,58 +189,18 @@ class LibrarianView(QWidget):
         row.addWidget(btn_logout)
         return row
 
-    # ── Dashboard tab ─────────────────────────────────────────────────
-
-    def _build_dashboard_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(16)
-
-        heading = QLabel("Overview")
-        heading.setStyleSheet("font-size: 15px; font-weight: 600; color: #1B2A4A;")
-        layout.addWidget(heading)
-
-        self.stat_grid = QGridLayout()
-        self.stat_grid.setSpacing(12)
-        layout.addLayout(self.stat_grid)
-        layout.addStretch()
-        return widget
-
-    def _populate_dashboard(self, summary):
-        # Clear previous stat cards
-        while self.stat_grid.count():
-            item = self.stat_grid.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
-        stats = [
-            ("Pending Submissions", summary.get("pending_submissions", 0),  "#B7791F"),
-            ("Approved Submissions", summary.get("approved_submissions", 0), "#1E7E34"),
-            ("Rejected Submissions", summary.get("rejected_submissions", 0), "#C0392B"),
-            ("Pending Reviews",      summary.get("pending_reviews", 0),      "#3A6BBF"),
-            ("Total Books",          summary.get("total_books", 0),          "#1B2A4A"),
-            ("Total Users",          summary.get("total_users", 0),          "#1B2A4A"),
-            ("Patrons",              summary.get("total_patrons", 0),        "#4A5568"),
-            ("Contributors",         summary.get("total_contributors", 0),   "#4A5568"),
-        ]
-
-        for i, (label, value, color) in enumerate(stats):
-            card = QFrame()
-            card.setObjectName("statCard")
-            card.setMinimumSize(160, 80)
-            card_layout = QVBoxLayout(card)
-            card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            val_lbl = QLabel(str(value))
-            val_lbl.setObjectName("statValue")
-            val_lbl.setStyleSheet(f"font-size: 28px; font-weight: 700; color: {color};")
-            val_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl = QLabel(label)
-            lbl.setObjectName("statLabel")
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            card_layout.addWidget(val_lbl)
-            card_layout.addWidget(lbl)
-            self.stat_grid.addWidget(card, i // 4, i % 4)
+    def _on_tab_changed(self, index):
+        """Forces an updated query refresh when selecting index tabs."""
+        if index == 0:
+            self.analytics_tab.refresh_analytics()
+        elif index == 1:
+            self._load_submissions()
+        elif index == 2:
+            self._load_reviews()
+        elif index == 3:
+            self._load_catalog()
+        elif index == 4:
+            self._load_users()
 
     # ── Submissions tab ───────────────────────────────────────────────
 
@@ -380,16 +355,11 @@ class LibrarianView(QWidget):
     # ------------------------------------------------------------------
 
     def _load_all(self):
-        self._load_dashboard()
+        self.analytics_tab.refresh_analytics()
         self._load_submissions()
         self._load_reviews()
         self._load_catalog()
         self._load_users()
-
-    def _load_dashboard(self):
-        result = self.ctrl.get_dashboard_summary()
-        if result["success"]:
-            self._populate_dashboard(result["summary"])
 
     def _load_submissions(self):
         result = self.ctrl.get_pending_submissions()
@@ -403,7 +373,6 @@ class LibrarianView(QWidget):
             self.sub_table.setItem(row, 2, QTableWidgetItem(sub.get("contributor_name", "")))
             date_str = str(sub.get("date_submitted", ""))[:10]
             self.sub_table.setItem(row, 3, QTableWidgetItem(date_str))
-            import os
             fname = os.path.basename(sub.get("file_path", "") or "")
             self.sub_table.setItem(row, 4, QTableWidgetItem(fname))
             # Action buttons
@@ -552,20 +521,21 @@ class LibrarianView(QWidget):
             self._notify(result)
             if result["success"]:
                 self._load_submissions()
-                self._load_dashboard()
+                self.analytics_tab.refresh_analytics()
 
     def _on_approve_review(self, rv):
         result = self.ctrl.approve_review(rv["review_id"])
         self._notify(result)
         if result["success"]:
             self._load_reviews()
-            self._load_dashboard()
+            self.analytics_tab.refresh_analytics()
 
     def _on_reject_review(self, rv):
         result = self.ctrl.reject_review(rv["review_id"])
         self._notify(result)
         if result["success"]:
             self._load_reviews()
+            self.analytics_tab.refresh_analytics()
 
     def _on_add_book(self):
         dialog = BookFormDialog(parent=self)
@@ -575,7 +545,7 @@ class LibrarianView(QWidget):
             self._notify(result)
             if result["success"]:
                 self._load_catalog()
-                self._load_dashboard()
+                self.analytics_tab.refresh_analytics()
 
     def _on_edit_book(self, book):
         dialog = BookFormDialog(book=book, parent=self)
@@ -585,6 +555,7 @@ class LibrarianView(QWidget):
             self._notify(result)
             if result["success"]:
                 self._load_catalog()
+                self.analytics_tab.refresh_analytics()
 
     def _on_delete_book(self, book):
         confirm = QMessageBox.question(
@@ -597,20 +568,21 @@ class LibrarianView(QWidget):
             self._notify(result)
             if result["success"]:
                 self._load_catalog()
-                self._load_dashboard()
+                self.analytics_tab.refresh_analytics()
 
     def _on_deactivate_user(self, user_id):
         result = self.ctrl.deactivate_user(user_id)
         self._notify(result)
         if result["success"]:
             self._load_users()
-            self._load_dashboard()
+            self.analytics_tab.refresh_analytics()
 
     def _on_reactivate_user(self, user_id):
         result = self.ctrl.reactivate_user(user_id)
         self._notify(result)
         if result["success"]:
             self._load_users()
+            self.analytics_tab.refresh_analytics()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -741,5 +713,5 @@ class BookFormDialog(QDialog):
             "format_type":      self.combo_format.currentText(),
             "subject_tags":     self.input_tags.text().strip(),
             "abstract":         self.input_abstract.toPlainText().strip(),
-            "file_path":        self.input_filepath.text().strip() or None,
+            "file_path":        self.input_filepath.text().strip() or None
         }

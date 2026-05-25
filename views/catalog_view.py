@@ -1,69 +1,32 @@
-"""
-Libralex Information System
-views/catalog_view.py
-
-Digital Catalog screen — available to all logged-in roles.
-Features:
-  - Keyword search bar
-  - Filter dropdowns: format, publication year, subject tag
-  - Results table with title, author, year, format, review count
-  - Book detail panel (opens on row click): abstract, file path, reviews
-  - Patrons can submit a review from the detail panel
-  - Librarians see an Edit / Delete button per row
-"""
-
+import os
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QComboBox, QTableWidget, QTableWidgetItem,
     QFrame, QTextEdit, QSplitter, QHeaderView, QAbstractItemView,
     QScrollArea, QSizePolicy, QMessageBox
 )
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QSize, QUrl
+from PyQt6.QtGui import QFont, QDesktopServices
 
 
 class CatalogView(QWidget):
-    """
-    Digital Catalog view for Libralex.
-
-    Usage:
-        catalog_ctrl = CatalogController(conn, current_user)
-        review_model = ReviewModel(conn)
-        view = CatalogView(
-            catalog_controller=catalog_ctrl,
-            current_user=auth.current_user,
-            review_model=review_model,
-        )
-        view.show()
-
-    Args:
-        catalog_controller: A CatalogController instance.
-        current_user:       Dict with at least user_id and role.
-        review_model:       ReviewModel instance for patron review submission.
-        on_logout:          Callable() — triggered by the logout button.
-    """
-
     def __init__(self, catalog_controller, current_user, review_model, on_logout, parent=None):
         super().__init__(parent)
-        self.catalog      = catalog_controller
-        self.user         = current_user
+        self.catalog = catalog_controller
+        self.user = current_user
         self.review_model = review_model
-        self.on_logout    = on_logout
-        self._books       = []     # Current search results
+        self.on_logout = on_logout
+        self._books = []
 
         self._init_window()
         self._build_ui()
         self._connect_signals()
         self._load_filter_options()
-        self._search()             # Load all books on open
-
-    # ------------------------------------------------------------------
-    # Window setup
-    # ------------------------------------------------------------------
+        self._search()
 
     def _init_window(self):
         self.setWindowTitle("Libralex — Digital Catalog")
-        self.setMinimumSize(900, 620)
+        self.setMinimumSize(950, 620)
         self.setObjectName("CatalogView")
         self._apply_styles()
 
@@ -72,101 +35,60 @@ class CatalogView(QWidget):
             QWidget#CatalogView { background-color: #F7F4EF; }
             QLabel#pageTitle { font-size: 20px; font-weight: 700; color: #1B2A4A; }
             QLabel#userBadge { font-size: 11px; color: #7A8499; }
-            QLineEdit, QComboBox {
+            QLineEdit, QComboBox, QTextEdit {
                 background-color: #FFFFFF; border: 1.5px solid #D1C9BC;
                 border-radius: 6px; padding: 6px 10px; font-size: 12px; color: #1B2A4A;
             }
-            QLineEdit:focus, QComboBox:focus { border-color: #3A6BBF; }
-            QPushButton#btnSearch {
-                background-color: #1B2A4A; color: #FFFFFF; border: none;
-                border-radius: 6px; padding: 7px 18px; font-size: 12px; font-weight: 600;
-            }
+            QLineEdit:focus, QComboBox:focus, QTextEdit:focus { border-color: #3A6BBF; }
+            QPushButton { border-radius: 6px; padding: 7px 14px; font-size: 12px; font-weight: 600; }
+            QPushButton#btnSearch { background-color: #1B2A4A; color: #FFFFFF; border: none; }
             QPushButton#btnSearch:hover { background-color: #2A3F6F; }
-            QPushButton#btnReset {
-                background-color: transparent; color: #7A8499;
-                border: 1.5px solid #D1C9BC; border-radius: 6px; padding: 7px 14px; font-size: 12px;
-            }
+            QPushButton#btnBorrowAction { background-color: #3A6BBF; color: #FFFFFF; border: none; padding: 8px 16px; font-size: 12px; }
+            QPushButton#btnBorrowAction:hover { background-color: #4B7FD6; }
+            QPushButton#btnPreview { background-color: #F39C12; color: #FFFFFF; border: none; padding: 8px 16px; font-size: 12px; }
+            QPushButton#btnPreview:hover { background-color: #D68910; }
+            QPushButton#btnSubmitReview { background-color: #1E7E34; color: #FFFFFF; border: none; font-size: 11px; }
+            QPushButton#btnSubmitReview:hover { background-color: #218838; }
+            QPushButton#btnReset { background-color: transparent; color: #7A8499; border: 1.5px solid #D1C9BC; }
             QPushButton#btnReset:hover { background-color: #EDE8E0; }
-            QPushButton#btnLogout {
-                background-color: transparent; color: #C0392B;
-                border: 1.5px solid #F5C6C2; border-radius: 6px; padding: 6px 14px; font-size: 12px;
-            }
+            QPushButton#btnLogout { background-color: transparent; color: #C0392B; border: 1.5px solid #F5C6C2; }
             QPushButton#btnLogout:hover { background-color: #FDECEA; }
-            QPushButton#btnSubmitReview {
-                background-color: #1B2A4A; color: #FFFFFF; border: none;
-                border-radius: 6px; padding: 8px 16px; font-size: 12px; font-weight: 600;
-            }
-            QPushButton#btnSubmitReview:hover { background-color: #2A3F6F; }
-            QPushButton#btnEditBook {
-                background-color: #E8F0FE; color: #1B2A4A; border: 1px solid #BDD0F8;
-                border-radius: 5px; padding: 4px 10px; font-size: 11px;
-            }
-            QPushButton#btnDeleteBook {
-                background-color: #FDECEA; color: #C0392B; border: 1px solid #F5C6C2;
-                border-radius: 5px; padding: 4px 10px; font-size: 11px;
-            }
-            QTableWidget {
-                background-color: #FFFFFF; border: 1px solid #E0D9CF;
-                border-radius: 8px; gridline-color: #F0EBE3;
-                selection-background-color: #EAF0FB;
-            }
+            QTableWidget { background-color: #FFFFFF; border: 1px solid #E0D9CF; border-radius: 8px; gridline-color: #F0EBE3; selection-background-color: #EAF0FB; }
             QTableWidget::item { padding: 6px 10px; color: #1B2A4A; }
-            QTableWidget::item:selected { background-color: #D6E4F7; color: #1B2A4A; }
-            QHeaderView::section {
-                background-color: #F0EBE3; color: #4A5568;
-                font-weight: 600; font-size: 11px;
-                padding: 7px 10px; border: none; border-bottom: 1px solid #D1C9BC;
-            }
-            QFrame#detailPanel {
-                background-color: #FFFFFF; border: 1px solid #E0D9CF; border-radius: 8px;
-            }
-            QTextEdit {
-                background-color: #F7F4EF; border: 1.5px solid #D1C9BC;
-                border-radius: 6px; padding: 6px; font-size: 12px; color: #1B2A4A;
-            }
+            QHeaderView::section { background-color: #F0EBE3; color: #4A5568; font-weight: 600; font-size: 11px; padding: 7px 10px; border: none; border-bottom: 1px solid #D1C9BC; }
+            QFrame#detailPanel { background-color: #FFFFFF; border: 1px solid #E0D9CF; border-radius: 8px; }
             QLabel#detailTitle { font-size: 15px; font-weight: 700; color: #1B2A4A; }
             QLabel#detailMeta  { font-size: 11px; color: #7A8499; }
             QLabel#sectionHead { font-size: 12px; font-weight: 600; color: #4A5568; }
             QLabel#reviewCount { font-size: 12px; color: #3A6BBF; font-weight: 600; }
-            QLabel#errorLabel  {
-                color: #C0392B; font-size: 11px; background-color: #FDECEA;
-                border: 1px solid #F5C6C2; border-radius: 5px; padding: 5px 8px;
-            }
-            QLabel#successLabel {
-                color: #1E7E34; font-size: 11px; background-color: #E9F7EC;
-                border: 1px solid #A8D5B0; border-radius: 5px; padding: 5px 8px;
-            }
         """)
-
-    # ------------------------------------------------------------------
-    # UI construction
-    # ------------------------------------------------------------------
 
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(12)
 
-        # Top bar
         root.addLayout(self._build_topbar())
-
-        # Search + filter row
         root.addLayout(self._build_search_row())
 
-        # Splitter: table (left) | detail panel (right)
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setHandleWidth(6)
 
         self.table = self._build_table()
         splitter.addWidget(self.table)
 
-        self.detail_panel = self._build_detail_panel()
-        splitter.addWidget(self.detail_panel)
+        # Container Area for Sidebar scroll
+        self.detail_scroll = QScrollArea()
+        self.detail_scroll.setWidgetResizable(True)
+        self.detail_scroll.setFrameShape(QFrame.Shape.NoFrame)
 
-        splitter.setSizes([560, 340])
+        self.detail_panel = self._build_detail_panel()
+        self.detail_scroll.setWidget(self.detail_panel)
+        splitter.addWidget(self.detail_scroll)
+
+        splitter.setSizes([540, 360])
         root.addWidget(splitter, stretch=1)
 
-        # Status bar
         self.status_label = QLabel("Loading catalog…")
         self.status_label.setStyleSheet("font-size: 11px; color: #7A8499;")
         root.addWidget(self.status_label)
@@ -177,10 +99,7 @@ class CatalogView(QWidget):
         title.setObjectName("pageTitle")
         row.addWidget(title)
         row.addStretch()
-        user_badge = QLabel(
-            f"Logged in as  {self.user.get('username', '')}  "
-            f"[{self.user.get('role', '').upper()}]"
-        )
+        user_badge = QLabel(f"Logged in as  {self.user.get('username', '')}  [{self.user.get('role', '').upper()}]")
         user_badge.setObjectName("userBadge")
         row.addWidget(user_badge)
         row.addSpacing(12)
@@ -223,13 +142,11 @@ class CatalogView(QWidget):
         self.btn_reset.setObjectName("btnReset")
         self.btn_reset.setFixedHeight(34)
         row.addWidget(self.btn_reset)
-
         return row
 
     def _build_table(self):
         cols = ["Title", "Author", "Year", "Format", "Reviews"]
-        if self._is_privileged():
-            cols.append("Actions")
+        if self._is_privileged(): cols.append("Actions")
 
         table = QTableWidget(0, len(cols))
         table.setHorizontalHeaderLabels(cols)
@@ -252,7 +169,6 @@ class CatalogView(QWidget):
         placeholder = QLabel("Select a resource to view details.")
         placeholder.setObjectName("detailMeta")
         placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        placeholder.setWordWrap(True)
         layout.addWidget(placeholder)
         layout.addStretch()
 
@@ -260,49 +176,34 @@ class CatalogView(QWidget):
         self._detail_placeholder = placeholder
         return panel
 
-    # ------------------------------------------------------------------
-    # Signal connections
-    # ------------------------------------------------------------------
-
     def _connect_signals(self):
+        self.table.cellClicked.connect(self._on_row_clicked)
         self.btn_search.clicked.connect(self._search)
         self.btn_reset.clicked.connect(self._reset_filters)
-        self.table.cellClicked.connect(self._on_row_clicked)
         self.input_keyword.returnPressed.connect(self._search)
 
-    # ------------------------------------------------------------------
-    # Data loading
-    # ------------------------------------------------------------------
+    def _is_privileged(self) -> bool:
+        return self.user.get('role', '') in {"librarian", "admin"}
 
     def _load_filter_options(self):
         result = self.catalog.get_filter_options()
-        if not result["success"]:
-            return
-
-        for fmt in result.get("formats", []):
-            self.combo_format.addItem(fmt)
-        for year in result.get("years", []):
-            self.combo_year.addItem(str(year))
-        for tag in result.get("tags", []):
-            self.combo_tag.addItem(tag)
+        if not result["success"]: return
+        for fmt in result.get("formats", []): self.combo_format.addItem(fmt)
+        for year in result.get("years", []): self.combo_year.addItem(str(year))
+        for tag in result.get("tags", []): self.combo_tag.addItem(tag)
 
     def _search(self):
-        keyword     = self.input_keyword.text().strip() or None
-        fmt_text    = self.combo_format.currentText()
-        year_text   = self.combo_year.currentText()
-        tag_text    = self.combo_tag.currentText()
+        keyword = self.input_keyword.text().strip() or None
+        fmt_text = self.combo_format.currentText()
+        year_text = self.combo_year.currentText()
+        tag_text = self.combo_tag.currentText()
 
-        format_type      = None if fmt_text  == "All Formats" else fmt_text
-        publication_year = None if year_text == "All Years"   else int(year_text)
-        subject_tag      = None if tag_text  == "All Tags"    else tag_text
+        format_type = None if fmt_text == "All Formats" else fmt_text
+        publication_year = None if year_text == "All Years" else int(year_text)
+        subject_tag = None if tag_text == "All Tags" else tag_text
 
-        result = self.catalog.search_catalog(
-            keyword=keyword,
-            publication_year=publication_year,
-            format_type=format_type,
-            subject_tag=subject_tag,
-        )
-
+        result = self.catalog.search_catalog(keyword=keyword, publication_year=publication_year,
+                                             format_type=format_type, subject_tag=subject_tag)
         self._books = result.get("books", [])
         self._populate_table(self._books)
         self.status_label.setText(result.get("message", ""))
@@ -314,16 +215,11 @@ class CatalogView(QWidget):
         self.combo_tag.setCurrentIndex(0)
         self._search()
 
-    # ------------------------------------------------------------------
-    # Table population
-    # ------------------------------------------------------------------
-
     def _populate_table(self, books):
         self.table.setRowCount(0)
         for book in books:
             row = self.table.rowCount()
             self.table.insertRow(row)
-
             review_count = self.catalog.review_model.get_review_count_by_book(book["book_id"])
 
             self.table.setItem(row, 0, QTableWidgetItem(book.get("title", "")))
@@ -331,67 +227,33 @@ class CatalogView(QWidget):
             self.table.setItem(row, 2, QTableWidgetItem(str(book.get("publication_year") or "—")))
             self.table.setItem(row, 3, QTableWidgetItem(book.get("format_type", "")))
             self.table.setItem(row, 4, QTableWidgetItem(f"⭐ {review_count}"))
-
-            # Librarian action buttons
-            if self._is_privileged():
-                action_widget = QWidget()
-                action_layout = QHBoxLayout(action_widget)
-                action_layout.setContentsMargins(4, 2, 4, 2)
-                action_layout.setSpacing(6)
-
-                btn_edit = QPushButton("Edit")
-                btn_edit.setObjectName("btnEditBook")
-                btn_edit.setFixedHeight(26)
-                btn_edit.clicked.connect(lambda _, b=book: self._on_edit_book(b))
-
-                btn_del = QPushButton("Delete")
-                btn_del.setObjectName("btnDeleteBook")
-                btn_del.setFixedHeight(26)
-                btn_del.clicked.connect(lambda _, b=book: self._on_delete_book(b))
-
-                action_layout.addWidget(btn_edit)
-                action_layout.addWidget(btn_del)
-                self.table.setCellWidget(row, 5, action_widget)
-
         self.table.resizeRowsToContents()
 
-    # ------------------------------------------------------------------
-    # Detail panel
-    # ------------------------------------------------------------------
-
     def _on_row_clicked(self, row, _col):
-        if row >= len(self._books):
-            return
+        if row >= len(self._books): return
         book_id = self._books[row]["book_id"]
-        result  = self.catalog.get_book_details(book_id)
+        result = self.catalog.get_book_details(book_id)
         if result["success"]:
             self._render_detail(result["book"], result["reviews"], result["review_count"])
 
     def _render_detail(self, book, reviews, review_count):
-        # Clear existing detail widgets
         while self._detail_layout.count():
             item = self._detail_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            if item.widget(): item.widget().deleteLater()
 
         layout = self._detail_layout
+        book_id = book["book_id"]
 
-        # Title
         title_lbl = QLabel(book.get("title", ""))
         title_lbl.setObjectName("detailTitle")
         title_lbl.setWordWrap(True)
         layout.addWidget(title_lbl)
 
-        # Meta
         meta = QLabel(
-            f"{book.get('author', '')}  ·  "
-            f"{book.get('publication_year') or '—'}  ·  "
-            f"{book.get('format_type', '')}"
-        )
+            f"{book.get('author', '')}  ·  {book.get('publication_year') or '—'}  ·  {book.get('format_type', '')}")
         meta.setObjectName("detailMeta")
         layout.addWidget(meta)
 
-        # Tags
         if book.get("subject_tags"):
             tag_lbl = QLabel(f"🏷  {book['subject_tags']}")
             tag_lbl.setStyleSheet("font-size: 11px; color: #3A6BBF;")
@@ -400,7 +262,6 @@ class CatalogView(QWidget):
 
         layout.addSpacing(6)
 
-        # Abstract
         if book.get("abstract"):
             ab_head = QLabel("Abstract")
             ab_head.setObjectName("sectionHead")
@@ -411,111 +272,107 @@ class CatalogView(QWidget):
             layout.addWidget(ab_text)
             layout.addSpacing(6)
 
-        # Review count
+        # File Preview Section & Borrow Actions (Stacked side-by-side)
+        action_layout = QHBoxLayout()
+
+        if book.get("file_path"):
+            preview_btn = QPushButton("📄 Preview Book")
+            preview_btn.setObjectName("btnPreview")
+            preview_btn.clicked.connect(lambda _, fp=book["file_path"]: self._open_file_preview(fp))
+            action_layout.addWidget(preview_btn)
+
+        if not self._is_privileged():
+            borrow_btn = QPushButton("🤝 Request to Borrow Book")
+            borrow_btn.setObjectName("btnBorrowAction")
+            borrow_btn.clicked.connect(lambda _, b_id=book_id: self._execute_borrow_intent(b_id))
+            action_layout.addWidget(borrow_btn)
+
+        action_layout.addStretch()
+        layout.addLayout(action_layout)
+        layout.addSpacing(8)
+
+        # Interactive Write-Review Section
+        if not self._is_privileged():
+            rev_form_head = QLabel("Write a Review")
+            rev_form_head.setObjectName("sectionHead")
+            layout.addWidget(rev_form_head)
+
+            form_row = QHBoxLayout()
+            form_row.addWidget(QLabel("Rating:"))
+            self.review_rating_combo = QComboBox()
+            self.review_rating_combo.addItems(["⭐⭐⭐⭐⭐", "⭐⭐⭐⭐", "⭐⭐⭐", "⭐⭐", "⭐"])
+            form_row.addWidget(self.review_rating_combo)
+            form_row.addStretch()
+            layout.addLayout(form_row)
+
+            self.review_text_input = QTextEdit()
+            self.review_text_input.setPlaceholderText("Share your thoughts regarding this book…")
+            self.review_text_input.setMaximumHeight(70)
+            layout.addWidget(self.review_text_input)
+
+            submit_rev_btn = QPushButton("Submit Review")
+            submit_rev_btn.setObjectName("btnSubmitReview")
+            submit_rev_btn.clicked.connect(lambda _, b_id=book_id: self._submit_review_action(b_id))
+            layout.addWidget(submit_rev_btn)
+            layout.addSpacing(10)
+
+        # Displays Public Feed
         rc_lbl = QLabel(f"⭐ {review_count} approved review(s)")
         rc_lbl.setObjectName("reviewCount")
         layout.addWidget(rc_lbl)
 
-        # Reviews list
         if reviews:
-            for rv in reviews[:5]:   # Show latest 5
+            for rv in reviews[:5]:
                 rv_frame = QFrame()
-                rv_frame.setStyleSheet(
-                    "QFrame { background:#F7F4EF; border-radius:6px; padding:4px; }"
-                )
-                rv_layout = QVBoxLayout(rv_frame)
-                rv_layout.setContentsMargins(8, 6, 8, 6)
-                rv_layout.setSpacing(2)
-                rv_user = QLabel(f"@{rv.get('username', 'unknown')}")
-                rv_user.setStyleSheet("font-size: 11px; font-weight: 600; color: #1B2A4A;")
-                rv_text = QLabel(rv.get("review_text", ""))
-                rv_text.setWordWrap(True)
-                rv_text.setStyleSheet("font-size: 11px; color: #4A5568;")
-                rv_layout.addWidget(rv_user)
-                rv_layout.addWidget(rv_text)
+                rv_frame.setStyleSheet("background-color: #F7F4EF; border-radius: 6px; padding: 6px;")
+                rv_box = QVBoxLayout(rv_frame)
+
+                # Render calculated numeric star counts
+                stars = "★" * rv.get('rating', 5) + "☆" * (5 - rv.get('rating', 5))
+
+                rv_user = QLabel(
+                    f"👤 {rv.get('username', 'Patron Reviewer')}   <span style='color: #F39C12;'>{stars}</span>")
+                rv_user.setStyleSheet("font-weight: 600; font-size: 11px; color: #1B2A4A;")
+
+                rv_msg = QLabel(rv.get('review_text', ''))
+                rv_msg.setWordWrap(True)
+                rv_msg.setStyleSheet("font-size: 11px; color: #4A5568;")
+
+                rv_box.addWidget(rv_user)
+                rv_box.addWidget(rv_msg)
                 layout.addWidget(rv_frame)
-
-        layout.addSpacing(8)
-
-        # Patron: submit review
-        if self.user.get("role") == "patron":
-            rev_head = QLabel("Submit a Review")
-            rev_head.setObjectName("sectionHead")
-            layout.addWidget(rev_head)
-
-            self._review_input = QTextEdit()
-            self._review_input.setPlaceholderText("Write your review here…")
-            self._review_input.setFixedHeight(70)
-            layout.addWidget(self._review_input)
-
-            self._review_feedback = QLabel("")
-            self._review_feedback.setWordWrap(True)
-            self._review_feedback.hide()
-            layout.addWidget(self._review_feedback)
-
-            btn_rev = QPushButton("Submit Review")
-            btn_rev.setObjectName("btnSubmitReview")
-            btn_rev.clicked.connect(lambda: self._on_submit_review(book["book_id"]))
-            layout.addWidget(btn_rev)
-
         layout.addStretch()
 
-    # ------------------------------------------------------------------
-    # Actions
-    # ------------------------------------------------------------------
+    def _open_file_preview(self, file_path: str):
+        """Attempts to open the requested file using the OS default application."""
+        if os.path.exists(file_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
+        else:
+            QMessageBox.warning(self, "File Not Found",
+                                "The preview file for this book is currently unavailable on the server or the path is broken.")
 
-    def _on_submit_review(self, book_id):
-        text = self._review_input.toPlainText().strip()
+    def _execute_borrow_intent(self, book_id: int):
+        reply = self.catalog.process_borrow_request(book_id)
+        if reply.get("success"):
+            QMessageBox.information(self, "Request Dispatched", reply.get("message"))
+        else:
+            QMessageBox.warning(self, "Action Terminated", reply.get("message"))
+
+    def _submit_review_action(self, book_id: int):
+        text = self.review_text_input.toPlainText().strip()
         if not text:
-            self._set_review_feedback("Review text cannot be empty.", error=True)
+            QMessageBox.warning(self, "Validation Alert", "Review content cannot be submitted empty.")
             return
 
-        result = self.review_model.create_review(
-            book_id=book_id,
-            user_id=self.user["user_id"],
-            review_text=text,
-        )
-        if result["success"]:
-            self._review_input.clear()
-            self._set_review_feedback("Review submitted! Pending librarian approval.", error=False)
+        # Calculate numeric value based on row indices
+        rating_val = 5 - self.review_rating_combo.currentIndex()
+        user_id = self.user.get("user_id")
+
+        response = self.review_model.create_review(book_id, user_id, rating_val, text)
+        if response["success"]:
+            QMessageBox.information(self, "Review Received", response["message"])
+            self.review_text_input.clear()
+            self.review_rating_combo.setCurrentIndex(0)
+            self._search()  # Refresh counters
         else:
-            self._set_review_feedback(result["message"], error=True)
-
-    def _set_review_feedback(self, msg, error=True):
-        obj = "errorLabel" if error else "successLabel"
-        prefix = "⚠  " if error else "✓  "
-        self._review_feedback.setObjectName(obj)
-        self._review_feedback.setStyleSheet(
-            "color:#C0392B;background:#FDECEA;border:1px solid #F5C6C2;"
-            "border-radius:5px;padding:5px 8px;font-size:11px;" if error else
-            "color:#1E7E34;background:#E9F7EC;border:1px solid #A8D5B0;"
-            "border-radius:5px;padding:5px 8px;font-size:11px;"
-        )
-        self._review_feedback.setText(prefix + msg)
-        self._review_feedback.show()
-
-    def _on_edit_book(self, book):
-        # Placeholder: open an EditBookDialog (to be implemented)
-        QMessageBox.information(self, "Edit Book",
-            f"Edit dialog for:\n\"{book['title']}\"\n\n(EditBookDialog — coming soon)")
-
-    def _on_delete_book(self, book):
-        confirm = QMessageBox.question(
-            self, "Confirm Delete",
-            f"Delete \"{book['title']}\" from the catalog?\n\nThis cannot be undone.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if confirm == QMessageBox.StandardButton.Yes:
-            result = self.catalog.remove_book(book["book_id"])
-            if result["success"]:
-                self._search()
-                QMessageBox.information(self, "Deleted", result["message"])
-            else:
-                QMessageBox.warning(self, "Error", result["message"])
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _is_privileged(self):
-        return self.user.get("role") in {"librarian", "admin"}
+            QMessageBox.warning(self, "Submission Stopped", response["message"])

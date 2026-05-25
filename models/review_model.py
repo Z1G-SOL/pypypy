@@ -1,9 +1,6 @@
 """
 Libralex Information System
 models/review_model.py
-
-DAL for the reviews table. One-review-per-book-per-user enforced in Python.
-Atomic approval toggle via single UPDATE.
 """
 import logging
 from datetime import datetime
@@ -16,18 +13,20 @@ class ReviewModel(BaseModel):
     def __init__(self, connection) -> None:
         self.conn = connection
 
-    def create_review(self, book_id: int, user_id: int, review_text: str) -> dict:
+    def create_review(self, book_id: int, user_id: int, rating: int, review_text: str) -> dict:
+        """Saves a new review complete with an integer rating value. Allows multiple reviews."""
         if not review_text or not review_text.strip():
             return {"success": False, "message": "Review text cannot be empty.", "review_id": None}
-        if self.get_review_by_user_and_book(user_id, book_id):
-            return {"success": False, "message": "You have already reviewed this resource.", "review_id": None}
+
         cursor = None
         try:
             self._check_conn()
             cursor = self.conn.cursor()
             cursor.execute(
-                "INSERT INTO reviews (book_id,user_id,review_text,date_posted,is_approved) VALUES (%s,%s,%s,%s,%s)",
-                (book_id, user_id, review_text.strip(), datetime.now(), False))
+                "INSERT INTO reviews (book_id, user_id, rating, review_text, date_posted, is_approved) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (book_id, user_id, rating, review_text.strip(), datetime.now(), False)
+            )
             self.conn.commit()
             return {"success": True, "message": "Review submitted — pending approval.", "review_id": cursor.lastrowid}
         except Exception as exc:
@@ -42,6 +41,8 @@ class ReviewModel(BaseModel):
         return self._fetch_one("SELECT * FROM reviews WHERE review_id = %s", (review_id,))
 
     def get_review_by_user_and_book(self, user_id: int, book_id: int) -> Optional[dict]:
+        # Kept this utility method in case you still need to check if a user has reviewed a book
+        # for other features (e.g., displaying a badge), but it no longer blocks creation.
         return self._fetch_one("SELECT * FROM reviews WHERE user_id = %s AND book_id = %s", (user_id, book_id))
 
     def get_approved_reviews_by_book(self, book_id: int) -> list:

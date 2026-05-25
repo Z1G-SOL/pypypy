@@ -1,38 +1,33 @@
 from models.borrow_model import BorrowModel
 from views.borrow_view import BorrowView
 
-
 class BorrowController:
-    def __init__(self, conn, current_user_id=None, role="user"):
+    def __init__(self, conn, current_user_id=None, role="patron"):
         self.model = BorrowModel(conn)
         self.view = BorrowView()
 
         self.current_user_id = current_user_id
         self.role = role
 
-        if self.role == "user":
+        # Maps internal logic cleanly to matching database role strings
+        if self.role == "patron":
             self.view.setup_user_table()
-        elif self.role == "admin":
+        elif self.role in ["admin", "librarian"]:
             self.view.setup_admin_table()
             self.view.approve_btn.clicked.connect(self.process_approval)
             self.view.reject_btn.clicked.connect(self.process_rejection)
+            self.view.return_btn.clicked.connect(self.process_return)
 
         self.view.refresh_button.clicked.connect(self.load_data)
         self.load_data()
 
     def load_data(self):
-        if self.role == "user" and self.current_user_id:
+        if self.role == "patron" and self.current_user_id:
             data = self.model.get_user_borrows(self.current_user_id)
-            self.view.populate_table(data, role="user")
-        elif self.role == "admin":
+            self.view.populate_table(data, role="patron")
+        elif self.role in ["admin", "librarian"]:
             data = self.model.get_all_borrows()
-            self.view.populate_table(data, role="admin")
-
-    def execute_checkout_request(self, book_id: int):
-        if self.role == "user" and self.current_user_id:
-            result = self.model.borrow_book(self.current_user_id, book_id)
-            self.view.show_message("Request Status", result["message"])
-            self.load_data()
+            self.view.populate_table(data, role=self.role)
 
     def get_selected_borrow_id(self) -> int:
         current_row = self.view.borrow_table.currentRow()
@@ -59,3 +54,13 @@ class BorrowController:
                 self.load_data()
             else:
                 self.view.show_message("Error", "Could not reject. Ensure it is currently 'PENDING'.")
+
+    def process_return(self):
+        """Processes returning an active loan item back into circulation."""
+        borrow_id = self.get_selected_borrow_id()
+        if borrow_id is not None:
+            if self.model.return_book(borrow_id):
+                self.view.show_message("Returned", "Book check-in recorded successfully.")
+                self.load_data()
+            else:
+                self.view.show_message("Error", "Could not complete return process. Ensure its status is active ('BORROWED').")

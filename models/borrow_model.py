@@ -1,13 +1,12 @@
 from datetime import datetime, timedelta
 
-
 class BorrowModel:
     def __init__(self, conn):
         """Initializes the data model with the shared active connection object."""
         self.conn = conn
 
     def borrow_book(self, user_id: int, book_id: int) -> dict:
-        """Creates a check-out request with a 'pending' state awaiting Admin actions."""
+        """Creates a check-out request with a temporary provisional due date to respect NOT NULL constraints."""
         cursor = self.conn.cursor(dictionary=True)
         try:
             # Verify user exists and is active
@@ -33,16 +32,18 @@ class BorrowModel:
                     return {"success": False, "message": "You already have a pending approval request for this book."}
                 return {"success": False, "message": "You currently hold an active checked-out copy of this item."}
 
-            # Insert request as 'pending'
-            now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            # Calculate temporary placeholder date to satisfy database NOT NULL constraints
+            now = datetime.now()
+            now_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            provisional_due_str = (now + timedelta(days=14)).strftime('%Y-%m-%d %H:%M:%S')
+
             insert_query = """
                 INSERT INTO book_borrows (book_id, user_id, borrow_date, due_date, status)
                 VALUES (%s, %s, %s, %s, 'pending')
             """
-            cursor.execute(insert_query, (book_id, user_id, now_str, now_str))
+            cursor.execute(insert_query, (book_id, user_id, now_str, provisional_due_str))
             self.conn.commit()
-            return {"success": True,
-                    "message": f"Request submitted! '{book['title']}' is now awaiting librarian approval."}
+            return {"success": True, "message": f"Request submitted! '{book['title']}' is awaiting librarian approval."}
         except Exception as err:
             self.conn.rollback()
             return {"success": False, "message": f"Transaction failed: {err}"}
@@ -50,14 +51,14 @@ class BorrowModel:
             cursor.close()
 
     def get_user_borrows(self, user_id: int) -> list:
-        """Fetches pending and active checked out items for a patron."""
+        """Fetches ONLY approved, active checkouts for the patron."""
         cursor = self.conn.cursor(dictionary=True)
         query = """
             SELECT b.title, b.author, bb.borrow_date, bb.due_date, bb.status 
             FROM book_borrows bb
             INNER JOIN books b ON bb.book_id = b.book_id
-            WHERE bb.user_id = %s AND bb.status IN ('pending', 'borrowed')
-            ORDER BY bb.status DESC, bb.due_date ASC
+            WHERE bb.user_id = %s AND bb.status = 'borrowed'
+            ORDER BY bb.due_date ASC
         """
         try:
             cursor.execute(query, (user_id,))
@@ -66,7 +67,7 @@ class BorrowModel:
             cursor.close()
 
     def get_all_borrows(self) -> list:
-        """Retrieves all rows system-wide including request IDs for administration tracking."""
+        """Retrieves system-wide queues for administrative processing."""
         cursor = self.conn.cursor(dictionary=True)
         query = """
             SELECT bb.borrow_id, b.title, u.full_name, u.email, bb.borrow_date, bb.due_date, bb.status
@@ -83,7 +84,7 @@ class BorrowModel:
             cursor.close()
 
     def approve_borrow(self, borrow_id: int, duration_days: int = 14) -> bool:
-        """Approves a request, updating status to 'borrowed'."""
+        """Approves a loan request, assigning the official system return window limits."""
         cursor = self.conn.cursor()
         borrow_date = datetime.now()
         due_date = borrow_date + timedelta(days=duration_days)
@@ -93,8 +94,7 @@ class BorrowModel:
             WHERE borrow_id = %s AND status = 'pending'
         """
         try:
-            cursor.execute(query, (borrow_date.strftime('%Y-%m-%d %H:%M:%S'), due_date.strftime('%Y-%m-%d %H:%M:%S'),
-                                   borrow_id))
+            cursor.execute(query, (borrow_date.strftime('%Y-%m-%d %H:%M:%S'), due_date.strftime('%Y-%m-%d %H:%M:%S'), borrow_id))
             self.conn.commit()
             return cursor.rowcount > 0
         except Exception:
@@ -104,9 +104,23 @@ class BorrowModel:
             cursor.close()
 
     def reject_borrow(self, borrow_id: int) -> bool:
-        """Rejects a request by updating its status to 'rejected'."""
+        """Rejects a pending loan request."""
         cursor = self.conn.cursor()
         query = "UPDATE book_borrows SET status = 'rejected' WHERE borrow_id = %s AND status = 'pending'"
+        try:
+            cursor.execute(query, (borrow_id,))
+            self.conn.commit()
+            return cursor.rowcount > 0
+        except Exception:
+            self.conn.rollback()
+            return False
+        finally:
+            cursor.close()
+
+    def return_book(self, borrow_id: int) -> bool:
+        """Marks an active approved check-out record as safely returned to library shelves."""
+        cursor = self.conn.cursor()
+        query = "UPDATE book_borrows SET status = 'returned' WHERE borrow_id = %s AND status = 'borrowed'"
         try:
             cursor.execute(query, (borrow_id,))
             self.conn.commit()

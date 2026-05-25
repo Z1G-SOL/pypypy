@@ -7,10 +7,12 @@ Instantiation raises PermissionError for non-librarian/admin users.
 """
 import logging
 from typing import Optional
+import mysql.connector
 from controllers.catalog_controller import CatalogController
 from controllers.submission_controller import SubmissionController
 from models.user_model import UserModel
 from models.review_model import ReviewModel
+from models.analytics_model import AnalyticsModel
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +20,12 @@ class LibrarianController:
     def __init__(self, connection, current_user: dict) -> None:
         if current_user["role"] not in {"librarian", "admin"}:
             raise PermissionError("LibrarianController requires librarian or admin role.")
-        self.current_user = current_user
-        self.user_model   = UserModel(connection)
-        self.review_model = ReviewModel(connection)
-        self.catalog      = CatalogController(connection, current_user)
-        self.submissions  = SubmissionController(connection, current_user)
+        self.current_user    = current_user
+        self.user_model      = UserModel(connection)
+        self.review_model    = ReviewModel(connection)
+        self.analytics_model = AnalyticsModel(connection)
+        self.catalog         = CatalogController(connection, current_user)
+        self.submissions     = SubmissionController(connection, current_user)
 
     @property
     def _user_id(self) -> int:     return self.current_user["user_id"]
@@ -31,6 +34,7 @@ class LibrarianController:
     def _is_admin(self) -> bool:   return self._role == "admin"
 
     def get_dashboard_summary(self) -> dict:
+        """Legacy summary metric counter."""
         try:
             sub_counts   = self.submissions.get_submission_summary().get("counts", {})
             pending_revs = self.review_model.get_pending_reviews()
@@ -51,6 +55,23 @@ class LibrarianController:
             logger.exception("get_dashboard_summary failed.")
             return {"success": False, "message": str(exc), "summary": {}}
 
+    def get_dashboard_stats(self) -> dict:
+        """Retrieves advanced metrics and highest-performing resources for the analytics panel."""
+        try:
+            metrics_response = self.analytics_model.get_kpi_metrics()
+            top_books = self.analytics_model.get_top_books(limit=10)
+
+            if metrics_response.get("success"):
+                return {
+                    "success": True,
+                    "metrics": metrics_response.get("data", {}),
+                    "top_books": top_books
+                }
+            return {"success": False, "message": metrics_response.get("message", "Failed to load engine metrics.")}
+        except Exception as exc:
+            logger.exception("get_dashboard_stats processing failure.")
+            return {"success": False, "message": str(exc), "metrics": {}, "top_books": []}
+
     def get_pending_submissions(self) -> dict:
         return self.submissions.get_pending_submissions()
 
@@ -67,7 +88,21 @@ class LibrarianController:
         except Exception as exc:
             return {"success": False, "message": str(exc), "reviews": []}
 
-    def approve_review(self, review_id: int) -> dict: return self.catalog.approve_review(review_id)
+    def approve_review(self, review_id: int) -> dict:
+        """Routes review authorization down to catalog controller while safely isolating SQL exception errors."""
+        try:
+            return self.catalog.approve_review(review_id)
+        except mysql.connector.Error as db_err:
+            if db_err.errno == 1062:
+                return {
+                    "success": False,
+                    "message": "Constraint Error: A duplicate reference row already exists in the tracking cache ledger."
+                }
+            return {"success": False, "message": f"Database processing fault: {db_err.msg}"}
+        except Exception as exc:
+            logger.exception("Exception caught during review routing validation pipeline.")
+            return {"success": False, "message": f"System processing failure: {str(exc)}"}
+
     def reject_review(self, review_id: int) -> dict:  return self.catalog.reject_review(review_id)
     def remove_review(self, review_id: int) -> dict:  return self.catalog.remove_review(review_id)
 
